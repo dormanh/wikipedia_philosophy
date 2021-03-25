@@ -1,0 +1,37 @@
+Humanities and social science
+Anthropology
+Archaeology
+History
+Linguistics
+Philosophy
+Religion
+Culinary arts
+Literature
+Performing arts
+Visual arts
+Economics
+Geography
+Area studies
+Ethnic studies
+Cultural studies
+Gender studies
+Organizational studies
+Political science
+Psychology
+Sociology
+
+Natural sciences
+Biology
+Chemistry
+Earth sciences
+Physics
+Space science
+Astronomy
+
+Formal sciences
+Computer science
+Logic
+Mathematics
+Applied mathematics
+Statistics
+Systems science
