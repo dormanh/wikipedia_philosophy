@@ -82,7 +82,7 @@ def find_links(wiki, title):
 font_paths = [
     os.path.join(
         matplotlib.rcParams["datapath"],
-        f"/home/borza/Hanga/NS/fonts/SourceSansPro-{f}.ttf",
+        f"/home/MEGAsync/Academics/TDK/Wikipedia/wiki_network/fonts/SourceSansPro-{f}.ttf",
     )
     for f in ["Bold", "SemiBold", "Regular"]
 ]
@@ -101,20 +101,17 @@ def magma_as_hex(n):
     ]
 
 
-def circle(r, center, n_points):
-    return [
-        [
-            math.cos(2 * math.pi / n_points * x) * r + center[0],
-            math.sin(2 * math.pi / n_points * x) * r + center[1],
-        ]
-        for x in range(n_points)
-    ]
+def circle(n_points, r=1, center=(0, 0), startangle=0):
+
+    angles = np.linspace(startangle, 360 + startangle, n_points + 1)[:-1]
+
+    return [[np.cos(np.deg2rad(ang)), np.sin(np.deg2rad(ang))] for ang in angles]
 
 
 def degree_dist(
     degrees_list, title="Degree distribution", labels=["Degree"], save=False
 ):
-
+    
     colors = magma_as_hex(len(degrees_list))
     low = np.log10(max(1, min([degrees.min() for degrees in degrees_list])))
     high = max([np.log10(degrees.max()) for degrees in degrees_list])
@@ -144,7 +141,7 @@ def degree_dist(
     plt.xticks(fontproperties=font_props["ticks"])
     plt.yticks(fontproperties=font_props["ticks"])
     plt.xlabel("k", fontproperties=font_props["label"], labelpad=20)
-    plt.ylabel("p(k)", fontproperties=font_props["label"], labelpad=20)
+    plt.ylabel("p(k)", rotation=0, fontproperties=font_props["label"], labelpad=20)
     plt.title(title, fontproperties=font_props["title"], pad=20)
 
     legend = plt.legend(
@@ -156,8 +153,6 @@ def degree_dist(
         fancybox=False,
     )
     legend.get_frame().set_linewidth(3)
-
-    plt.show()
 
     if save:
         plt.savefig(
@@ -173,6 +168,7 @@ def corr_heatmap(
     vmin=0,
     vmax=1,
     mask=None,
+    enhance=False,
     xrotation=90,
     xlabel=None,
     ylabel=None,
@@ -185,12 +181,13 @@ def corr_heatmap(
     ax.set_facecolor("black")
 
     sns.heatmap(
-        df,
+        df if not enhance else df ** 0.5,
         cmap="magma",
         mask=mask,
         annot=annot,
         vmin=vmin,
         vmax=vmax,
+        center=(vmax + vmin) / 2,
         linecolor="white",
         linewidths=min(3, 30 / df.shape[0]),
         annot_kws={"fontproperties": font_props["ticks"]},
@@ -205,6 +202,8 @@ def corr_heatmap(
     )
 
     cb = ax.collections[0].colorbar
+    if enhance:
+        cb.set_ticklabels(np.square(np.linspace(vmin, vmax, cbar_nticks)).round(1))
     for t in cb.ax.get_xticklabels():
         t.set_font_properties(font_props["ticks"])
     cb.outline.set_edgecolor("black")
@@ -219,74 +218,11 @@ def corr_heatmap(
         fontproperties=font_props["title"],
         pad=20,
     )
-    plt.show()
 
     if save:
         plt.savefig(
             "figs/{}".format("_".join(title.lower().split(" "))), bbox_inches="tight"
         )
-
-        
-def fields_bar_chart(fields, attr, title, sort_by=None, add_legend=True, save=False):
-
-    sorted_fields = fields.sort_values(by=attr if not sort_by else sort_by).reset_index(
-        drop=True
-    )
-    y_coords = np.linspace(0, 1, sorted_fields.shape[0])
-
-    fig, ax = plt.subplots()
-
-    ax.barh(
-        y_coords,
-        sorted_fields[attr],
-        color=sorted_fields["color_b"],
-        linewidth=3,
-        left=0,
-        height=0.025,
-    )
-
-    for i, y in enumerate(y_coords):
-
-        ax.text(
-            -0.3 * sorted_fields[attr].max(),
-            y - 0.008,
-            sorted_fields.loc[i, "field"],
-            font_properties=font_props["label"],
-        )
-
-    plt.xticks(fontproperties=font_props["ticks"])
-    plt.yticks([])
-    plt.ylim(-0.025, 1.025)
-    plt.title(f"Ranking by: {title}", font_properties=font_props["title"], pad=20)
-
-    if add_legend:
-        
-        legend = (
-            sorted_fields.groupby("broad_field")[["rel_size", "color_b"]]
-            .agg({"rel_size": "sum", "color_b": "max"})
-            .sort_values(by="rel_size")
-            .pipe(
-                lambda df: plt.legend(
-                    handles=[
-                        Patch(facecolor=c, edgecolor="white", linewidth=3)
-                        for c in df["color_b"]
-                    ],
-                    labels=df.index.tolist(),
-                    loc="center right",
-                    facecolor=None,
-                    edgecolor="white",
-                    fancybox=False,
-                    prop=font_props["label"],
-                )
-            )
-        )
-        
-        legend.get_frame().set_linewidth(3)
-
-    if save:
-        plt.savefig(
-            "figs/{}.png".format("_".join(title.split(" "))), bbox_inches="tight"
-        )      
         
         
 def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=False):
@@ -354,10 +290,107 @@ def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=Fa
         frameon=False,
     )
 
-    plt.show()
-
     if save:
         plt.savefig(f"figs/{to_plot}_curve.png", bbox_inches="tight")
+        
+        
+def draw_backbone(
+    backbone,
+    ordered_nodes,
+    node_colors,
+    node_size,
+    G=None,
+    startangle=0,
+    node_scale=0.5,
+    edge_scale=10,
+    arrowstyle="wedge",
+    connectionstyle="arc",
+    background_color="white",
+    title=None,
+    save=False,
+):
+
+    # set appearance
+
+    fig, ax = plt.subplots(figsize=(15, 15), facecolor=background_color)
+    ax.axis("off")
+
+    node_layout = {
+        n: circle(len(ordered_nodes), startangle=startangle)[i]
+        for i, n in enumerate(ordered_nodes)
+    }
+
+    text_layout = {
+        n: {
+            "xy": (1.2 * np.sign(node_layout[n][0]), 1.4 * node_layout[n][1]),
+            "ang": (
+                np.rad2deg(np.arccos(node_layout[n][0]))
+                if node_layout[n][1] >= 0
+                else 360 - np.rad2deg(np.arccos(node_layout[n][0]))
+            ),
+        }
+        for n in ordered_nodes
+    }
+
+    # draw nodes and edges
+
+    nx.draw_networkx_nodes(
+        backbone,
+        pos=node_layout,
+        node_size=[node_size[n] * node_scale for n in backbone.nodes()],
+        node_color=[node_colors[n] for n in backbone.nodes()],
+    )
+    
+    if G:
+
+        nx.draw_networkx_edges(
+            G,
+            edgelist=[edge for edge in G.edges() if edge not in backbone.edges()],
+            pos=node_layout,
+            width=[
+                edge[2]["weight"] * edge_scale
+                for edge in G.edges(data=True)
+                if edge not in backbone.edges(data=True)
+            ],
+            arrowstyle="-",
+            alpha=0.25,
+        )
+
+    nx.draw_networkx_edges(
+        backbone,
+        pos=node_layout,
+        width=[edge[2]["weight"] * edge_scale * 2 for edge in backbone.edges(data=True)],
+        edge_color=[node_colors[edge[0]] for edge in backbone.edges()],
+        arrowstyle=matplotlib.patches.ArrowStyle.Wedge(shrink_factor=0.2)
+        if arrowstyle == "wedge"
+        else arrowstyle,
+        connectionstyle=matplotlib.patches.ConnectionStyle("Arc3", rad=-0.2)
+        if connectionstyle == "arc"
+        else connectionstyle,
+    )
+
+    # annotate
+
+    for k, v in text_layout.items():
+
+        ax.annotate(
+            k,
+            xy=node_layout[k],
+            xytext=v["xy"],
+            horizontalalignment="left" if np.sign(node_layout[k][0]) == 1 else "right",
+            font_properties=font_props["label"],
+            arrowprops={
+                "color": "black",
+                "arrowstyle": "-",
+                "connectionstyle": "angle,angleA=0,angleB={}".format(v["ang"]),
+            },
+        )
+        
+    if title:
+        ax.set_title(title, font_properties=font_props["title"], pad=120)
+
+    if save:
+        plt.savefig("figs/{}.png".format("_".join(title.lower().split(" "))), bbox_inches="tight")
         
 
         
@@ -468,7 +501,13 @@ def logit_model(X, y, class_weights={0: 0.01, 1: 0.99}):
     }
 
     return {"model": logit, "metrics": metrics_dict}
-    
+
+
+def gini(x):
+
+    return np.concatenate([[abs(x_i - x_j) for x_j in x] for x_i in x]).sum() / (
+        2 * x.shape[0] ** 2 * x.mean()
+    )
     
     
 ### NETWORKS
@@ -537,135 +576,56 @@ def grow_canopy(node, graph, current_level=0, max_level=2):
     return canopy
 
 
-def disparity_filter(G, weight="weight"):
-    """Compute significance scores (alpha) for weighted edges in G as defined in Serrano et al. 2009
-    Args
-        G: Weighted NetworkX graph
-    Returns
-        Weighted graph with a significance score (alpha) assigned to each edge
-    References
-        M. A. Serrano et al. (2009) Extracting the Multiscale backbone of complex weighted networks. PNAS, 106:16, pp. 6483-6488.
-    """
+def backbone_extraction(G, alpha, directed=True, print_info=True):
 
-    if nx.is_directed(G):  # directed case
-        N = nx.DiGraph()
-        for u in G:
+    N = nx.DiGraph() if directed else nx.Graph()
 
-            k_out = G.out_degree(u)
-            k_in = G.in_degree(u)
+    for n in G.nodes():
 
-            if k_out > 1:
-                sum_w_out = sum(np.absolute(G[u][v][weight]) for v in G.successors(u))
-                for v in G.successors(u):
-                    w = G[u][v][weight]
-                    p_ij_out = float(np.absolute(w)) / sum_w_out
-                    alpha_ij_out = (
-                        1
-                        - (k_out - 1)
-                        * integrate.quad(lambda x: (1 - x) ** (k_out - 2), 0, p_ij_out)[
-                            0
-                        ]
+        if directed:
+            edges_list = [G.out_edges(n, data=True), G.in_edges(n, data=True)]
+
+        else:
+            edges_list = [G.edges(n, data=True)]
+
+        significant_edges = [
+            (
+                pd.DataFrame({edge[1 - i]: edge[2] for edge in edges})
+                .T.assign(
+                    rel_weight=lambda df: df["weight"].pipe(lambda s: s / s.sum())
+                )
+                .pipe(
+                    lambda df: df.assign(
+                        alpha=df["rel_weight"].apply(
+                            lambda w: (
+                                1
+                                - (len(edges) - 1)
+                                * integrate.quad(
+                                    lambda x: (1 - x) ** (len(edges) - 2), 0, w
+                                )[0]
+                            )
+                        )
                     )
-                    N.add_edge(u, v, weight=w, alpha_out=float("%.4f" % alpha_ij_out))
+                )
+                .loc[lambda df: df["alpha"] < alpha]
+            )["weight"].to_dict()
+            if len(edges) > 1
+            else {edge[1 - i]: edge[2]["weight"] for edge in edges}
+            for i, edges in enumerate(edges_list)
+        ]
 
-            elif k_out == 1 and G.in_degree(G.successors(u)[0]) == 1:
-                # we need to keep the connection as it is the only way to maintain the connectivity of the network
-                v = G.successors(u)[0]
-                w = G[u][v][weight]
-                N.add_edge(u, v, weight=w, alpha_out=0.0, alpha_in=0.0)
-                # there is no need to do the same for the k_in, since the link is built already from the tail
+        for i, edges in enumerate(significant_edges):
 
-            if k_in > 1:
-                sum_w_in = sum(np.absolute(G[v][u][weight]) for v in G.predecessors(u))
-                for v in G.predecessors(u):
-                    w = G[v][u][weight]
-                    p_ij_in = float(np.absolute(w)) / sum_w_in
-                    alpha_ij_in = (
-                        1
-                        - (k_in - 1)
-                        * integrate.quad(lambda x: (1 - x) ** (k_in - 2), 0, p_ij_in)[0]
-                    )
-                    N.add_edge(v, u, weight=w, alpha_in=float("%.4f" % alpha_ij_in))
-        return N
+            if edges:
 
-    else:  # undirected case
-        B = nx.Graph()
-        for u in G:
-            k = len(G[u])
-            if k > 1:
-                sum_w = sum(np.absolute(G[u][v][weight]) for v in G[u])
-                for v in G[u]:
-                    w = G[u][v][weight]
-                    p_ij = float(np.absolute(w)) / sum_w
-                    alpha_ij = (
-                        1
-                        - (k - 1)
-                        * integrate.quad(lambda x: (1 - x) ** (k - 2), 0, p_ij)[0]
-                    )
-                    B.add_edge(u, v, weight=w, alpha=float("%.4f" % alpha_ij))
-        return B
+                N.add_edges_from(
+                    [
+                        (n, k, {"weight": v}) if (i == 0) else (k, n, {"weight": v})
+                        for k, v in edges.items()
+                    ]
+                )
 
+    if print_info:
+        print(nx.info(N))
 
-def disparity_filter_alpha_cut(G, weight="weight", alpha_t=0.4, cut_mode="or"):
-    """Performs a cut of the graph previously filtered through the disparity_filter function.
-
-    Args
-    ----
-    G: Weighted NetworkX graph
-
-    weight: string (default='weight')
-        Key for edge data used as the edge weight w_ij.
-
-    alpha_t: double (default='0.4')
-        The threshold for the alpha parameter that is used to select the surviving edges.
-        It has to be a number between 0 and 1.
-
-    cut_mode: string (default='or')
-        Possible strings: 'or', 'and'.
-        It works only for directed graphs. It represents the logic operation to filter out edges
-        that do not pass the threshold value, combining the alpha_in and alpha_out attributes
-        resulting from the disparity_filter function.
-
-
-    Returns
-    -------
-    B: Weighted NetworkX graph
-        The resulting graph contains only edges that survived from the filtering with the alpha_t threshold
-
-    References
-    ---------
-    .. M. A. Serrano et al. (2009) Extracting the Multiscale backbone of complex weighted networks. PNAS, 106:16, pp. 6483-6488.
-    """
-
-    if nx.is_directed(G):  # Directed case:
-        B = nx.DiGraph()
-        for u, v, w in G.edges(data=True):
-            try:
-                alpha_in = w["alpha_in"]
-            except KeyError:  # there is no alpha_in, so we assign 1. It will never pass the cut
-                alpha_in = 1
-            try:
-                alpha_out = w["alpha_out"]
-            except KeyError:  # there is no alpha_out, so we assign 1. It will never pass the cut
-                alpha_out = 1
-
-            if cut_mode == "or":
-                if alpha_in < alpha_t or alpha_out < alpha_t:
-                    B.add_edge(u, v, weight=w[weight])
-            elif cut_mode == "and":
-                if alpha_in < alpha_t and alpha_out < alpha_t:
-                    B.add_edge(u, v, weight=w[weight])
-        return B
-
-    else:
-        B = nx.Graph()  # Undirected case:
-        for u, v, w in G.edges(data=True):
-
-            try:
-                alpha = w["alpha"]
-            except KeyError:  # there is no alpha, so we assign 1. It will never pass the cut
-                alpha = 1
-
-            if alpha < alpha_t:
-                B.add_edge(u, v, weight=w[weight])
-        return B
+    return N
