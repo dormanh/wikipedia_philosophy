@@ -16,6 +16,7 @@ from colormap import rgb2hex
 import os
 import pickle
 import glob
+import gc
 from tqdm.notebook import tqdm as tqdm
 
 from sklearn import metrics
@@ -25,7 +26,7 @@ from sklearn.feature_selection import SelectFromModel
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
-from statsmodels.api import Logit
+from statsmodels.api import Logit, OLS
 from scipy import integrate
 import scipy.stats as stat
 
@@ -82,7 +83,7 @@ def find_links(wiki, title):
 font_paths = [
     os.path.join(
         matplotlib.rcParams["datapath"],
-        f"/home/MEGAsync/Academics/TDK/Wikipedia/wiki_network/fonts/SourceSansPro-{f}.ttf",
+        f"/home/borza/Hanga/NS/fonts/SourceSansPro-{f}.ttf",
     )
     for f in ["Bold", "SemiBold", "Regular"]
 ]
@@ -231,7 +232,9 @@ def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=Fa
         pd.concat(
             [
                 pd.DataFrame.from_dict(
-                    {k: v[to_plot]["auc"]}, orient="index", columns=["auc"]
+                    {k: v["network_attrs"][to_plot]["auc"]},
+                    orient="index",
+                    columns=["auc"],
                 )
                 for k, v in metrics_dict.items()
             ]
@@ -242,20 +245,14 @@ def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=Fa
 
     for i, r in sorted_models.iterrows():
 
-        plt.plot(
-            metrics_dict[i][to_plot]["x"],
-            metrics_dict[i][to_plot]["y"],
-            c=r["color"],
-            linewidth=3,
-        )
+        for k, v in metrics_dict[i].items():
 
-    plt.plot(
-        np.linspace(0, 1),
-        np.linspace(0, 1) if to_plot == "roc" else np.linspace(1, 0),
-        c="grey",
-        linewidth=3,
-        label="random",
-    )
+            plt.plot(
+                v[to_plot]["x"],
+                v[to_plot]["y"],
+                c=r["color"] if k == "network_attrs" else "grey",
+                linewidth=3,
+            )
 
     plt.xticks(fontproperties=font_props["ticks"])
     plt.yticks(fontproperties=font_props["ticks"])
@@ -278,11 +275,12 @@ def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=Fa
                 facecolor=c,
                 linewidth=2,
             )
-            for c in sorted_models["color"]
+            for c in np.append(sorted_models["color"].values, "grey")
         ],
         labels=sorted_models.apply(
             lambda r: "{} (auc = {})".format(r.name, round(r["auc"], 2)), axis=1
-        ).values.tolist(),
+        ).values.tolist()
+        + ["Baseline"],
         prop=font_props["ticks"],
         loc="lower center",
         bbox_to_anchor=(0.5, -0.45),
@@ -291,7 +289,7 @@ def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=Fa
     )
 
     if save:
-        plt.savefig(f"figs/{to_plot}_curve.png", bbox_inches="tight")
+        plt.savefig(f"figs/{to_plot}_curve.png", bbox_inches="tight")        
         
         
 def draw_backbone(
@@ -397,6 +395,32 @@ def draw_backbone(
 ### DATA ANALYSIS
 
 
+def ols_model(X, y, test_size=0.25):
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size)
+
+    ols = OLS(y_train, X_train).fit()
+
+    coeffs = (
+        ols.params.to_frame()
+        .rename(columns={0: "coeff"})
+        .merge(
+            ols.pvalues.to_frame().rename(columns={0: "p-value"}),
+            left_index=True,
+            right_index=True,
+        )
+        .assign(
+            coeff=lambda df: df.apply(
+                lambda r: r["coeff"] if r["p-value"] < 0.05 else np.nan, axis=1
+            )
+        )[["coeff"]]
+    )
+
+    mse = ols.predict(X_test).pipe(lambda s: (s - y_test) ** 2).mean()
+
+    return {"coeffs": coeffs, "mse": mse}
+
+
 class LogisticReg(LogisticRegression):
 
     """
@@ -471,31 +495,32 @@ class LogisticReg(LogisticRegression):
         return self
     
     
-def logit_model(X, y, class_weights={0: 0.01, 1: 0.99}):
+def logit_model(X, y, test_size=0.25):
 
-    # fit logistic regression
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size)
 
     logit = LogisticReg(
-        max_iter=1000, fit_intercept=False, class_weight=class_weights
-    ).fit(X, y)
+        max_iter=1000,
+        fit_intercept=False,
+    ).fit(X_train, y_train)
 
-    # calculate roc and precision-recall curves
-
-    prediction = logit.predict_proba(X)[:, 1]
-    false_pos, true_pos, tresholds = metrics.roc_curve(y, prediction)
-    auc = metrics.roc_auc_score(y, prediction)
-    prec, rec, tresholds = metrics.precision_recall_curve(y, prediction)
+    prediction = logit.predict_proba(X_test)[:, 1]
+    false_pos, true_pos, roc_thresholds = metrics.roc_curve(y_test, prediction)
+    auc = metrics.roc_auc_score(y_test, prediction)
+    prec, rec, pr_thresholds = metrics.precision_recall_curve(y_test, prediction)
     auc_pr = metrics.auc(rec, prec)
 
     metrics_dict = {
         "roc": {
             "x": false_pos,
             "y": true_pos,
+            "th": roc_thresholds,
             "auc": auc,
         },
         "p-r": {
-            "x": prec,
-            "y": rec,
+            "x": rec,
+            "y": prec,
+            "th": pr_thresholds,
             "auc": auc_pr,
         },
     }
@@ -629,3 +654,85 @@ def backbone_extraction(G, alpha, directed=True, print_info=True):
         print(nx.info(N))
 
     return N
+
+
+def depth_n_field_edges(G, n, index_df, batchsize=100_000):
+
+    # get adjacency matrix
+    adj_sparse = nx.adjacency_matrix(G) ** n
+    npedges = np.zeros((adj_sparse.data.shape[0], 3), dtype=int)
+
+    for i, rowstart in enumerate(adj_sparse.indptr[:-1]):
+        rowend = adj_sparse.indptr[i + 1]
+        npedges[rowstart:rowend, 0] = i
+        npedges[rowstart:rowend, 1] = adj_sparse.indices[rowstart:rowend]
+        npedges[rowstart:rowend, 2] = adj_sparse.data[rowstart:rowend]
+
+    edges = pd.DataFrame(npedges, columns=["from", "to", "weight"])
+    #edges.to_parquet(f"output/depth_{n}_edges.parquet")
+
+    # collect garbage
+    del adj_sparse
+    gc.collect()
+
+    # separate single and multiple field nodes
+    (_, singlefield), (__, multifield) = index_df.groupby(index_df["fieldcount"] > 1)
+
+    # collect data of single field nodes
+    indsets = {f: gdf["index"].pipe(set) for f, gdf in singlefield.groupby("field")}
+
+    slinks = []
+
+    for gid, inds in tqdm(indsets.items()):
+
+        targs = edges.loc[lambda df: df["from"].isin(inds), ["to", "weight"]]
+
+        for gid2, inds2 in indsets.items():
+            slinks.append(
+                {
+                    "field_from": gid,
+                    "field_to": gid2,
+                    "weight": targs.loc[
+                        lambda df: df["to"].isin(inds2), "weight"
+                    ].sum(),
+                }
+            )
+
+    field_edges = pd.DataFrame(slinks).set_index(["field_from", "field_to"])
+
+    # collect data of multiple field nodes
+    multi_inds = multifield["index"].pipe(set)
+    multi_edges = edges.loc[
+        lambda df: df["from"].isin(multi_inds) | df["to"].isin(multi_inds), :
+    ]
+
+    for i in tqdm(range(0, multi_edges.shape[0], batchsize)):
+
+        batch_links = (
+            multi_edges.iloc[i : (i + batchsize), :]
+            .merge(index_df[["index", "field"]], left_on="from", right_on="index")
+            .drop("index", axis=1)
+            .rename(columns={"field": "field_from"})
+            .merge(index_df[["index", "field"]], left_on="to", right_on="index")
+            .drop("index", axis=1)
+            .rename(columns={"field": "field_to"})
+            .assign(
+                weight=lambda df: df["weight"]
+                / df.groupby(["from", "to"])["weight"].transform("count")
+            )
+            .drop(["from", "to"], axis=1)
+            .groupby(["field_from", "field_to"])
+            .sum()
+        )
+        ind_union = field_edges.index.union(batch_links.index)
+        field_edges = field_edges.reindex(ind_union).fillna(0) + batch_links.reindex(
+            ind_union
+        ).fillna(0)
+
+    field_edges.to_parquet(f"output/depth_{n}_field_edges.parquet")
+    field_link_matrix = field_edges.reset_index().pivot_table(
+        index="field_from", columns="field_to", values="weight"
+    )
+    field_link_matrix.to_parquet(f"output/depth_{n}_field_link_matrix.parquet")
+
+    return field_link_matrix
