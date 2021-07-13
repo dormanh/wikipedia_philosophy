@@ -1,9 +1,17 @@
+import os
+import pickle
+import glob
+import gc
+from tqdm.notebook import tqdm as tqdm
+
 import wikipediaapi
 
 import pandas as pd
 import numpy as np
 import math
 import networkx as nx
+from scipy import integrate
+import scipy.stats as stat
 
 import matplotlib
 from matplotlib import pyplot as plt
@@ -13,12 +21,6 @@ from matplotlib import font_manager as fm
 import seaborn as sns
 from colormap import rgb2hex
 
-import os
-import pickle
-import glob
-import gc
-from tqdm.notebook import tqdm as tqdm
-
 from sklearn import metrics
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -26,14 +28,11 @@ from sklearn.feature_selection import SelectFromModel
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
-from statsmodels.api import Logit, OLS
-from scipy import integrate
-import scipy.stats as stat
+from statsmodels.api import Logit, GLS
 
 from operator import or_
 from functools import reduce
 from itertools import combinations, repeat, chain, permutations
-
 
 
 ### DATA ACQUISITION
@@ -76,6 +75,15 @@ def find_links(wiki, title):
     )
 
 
+def get(filename, fileformat="parquet"):
+
+    if fileformat == "parquet":
+
+        return pd.read_parquet(f"output/{filename}.{fileformat}")
+
+    with open(f"output/{filename}.{fileformat}", "rb") as fp:
+        return pickle.load(fp)
+    
 
 ### FIGURES
 
@@ -160,6 +168,20 @@ def degree_dist(
             "figs/{}".format("_".join(title.lower().split(" "))), bbox_inches="tight"
         )
         
+        
+def sort_adjacency_matrix(matrix):
+
+    return matrix.apply(lambda c: c / c.sum()).pipe(
+        lambda df: df.loc[
+            df.apply(lambda r: 1 / (r > 0.05).sum(), axis=1)
+            .reset_index()
+            .rename(columns={0: "sign_count"})
+            .sort_values(by=["sign_count", "field_to"])["field_to"]
+            .values,
+            :,
+        ].pipe(lambda df: df.loc[:, df.index.tolist()])
+    )
+        
 
 def corr_heatmap(
     df,
@@ -223,6 +245,88 @@ def corr_heatmap(
     if save:
         plt.savefig(
             "figs/{}".format("_".join(title.lower().split(" "))), bbox_inches="tight"
+        )
+        
+        
+ranking_dict = {
+    "ext_citations": "number of external citations",
+    "rel_ext_use": "relative external use",
+    "ext_cit_avg": "external citation average",
+    "imp_exp_ratio": "import-export ratio",
+}
+
+
+def plot_ranking(attr, sort_by=None, figsize=(20, 20), legend=False, save=False):
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sorted_fields = fields.sort_values(by=sort_by if sort_by else attr)
+    y_coords = np.linspace(0, 1, sorted_fields.shape[0])
+
+    ax.barh(
+        y_coords,
+        sorted_fields[attr],
+        color=sorted_fields["color_b"],
+        linewidth=3,
+        left=0,
+        height=0.025,
+    )
+
+    if attr == "imp_exp_ratio":
+        ax.set_xlim(0.5, 1.3)
+
+    for j, y in enumerate(y_coords):
+
+        xlow, xhigh = ax.get_xlim()
+
+        ax.text(
+            xlow - (xhigh - xlow) * 0.2,
+            y - 0.008,
+            sorted_fields.index[j],
+            font_properties=font_props["label"],
+        )
+
+    for label in ax.get_xticklabels():
+        label.set_fontproperties(font_props["ticks"])
+
+    ax.set_yticks([])
+    ax.set_ylim(-0.025, 1.025)
+    ax.set_title(
+        f"Ranking by {ranking_dict[attr]}",
+        font_properties=font_props["title"],
+        pad=20,
+    )
+
+    if legend:
+
+        legend = (
+            sorted_fields.reset_index()
+            .groupby("broad_field")[["rel_size", "color_b"]]
+            .agg({"rel_size": "sum", "color_b": "max"})
+            .sort_values(by="rel_size")
+            .pipe(
+                lambda df: ax.legend(
+                    handles=[
+                        Patch(facecolor=c, edgecolor="white", linewidth=3)
+                        for c in df["color_b"]
+                    ],
+                    labels=df.index.tolist(),
+                    loc="center",
+                    bbox_to_anchor=(0.7, 0.5),
+                    facecolor=None,
+                    edgecolor="white",
+                    fancybox=False,
+                    prop=font_props["label"],
+                )
+            )
+        )
+
+        legend.get_frame().set_linewidth(3)
+
+    if save:
+        plt.savefig(
+            "figs/rangsor_{}.png".format("_".join(ranking_dict_hun[attr].split(" "))),
+            bbox_inches="tight",
         )
         
         
@@ -292,120 +396,148 @@ def plot_reg_metrics(metrics_dict, xlabel, ylabel, title, to_plot="roc", save=Fa
         plt.savefig(f"figs/{to_plot}_curve.png", bbox_inches="tight")        
         
         
-def draw_backbone(
-    backbone,
-    ordered_nodes,
-    node_colors,
-    node_size,
-    G=None,
+def show_backbone(
+    level,
+    figsize=(16, 20),
+    inner_color="#ffffff",
+    facecolor="#313131",
+    text_color="#ffffff",
     startangle=0,
-    node_scale=0.5,
+    node_scale=1,
     edge_scale=10,
-    arrowstyle="wedge",
-    connectionstyle="arc",
-    background_color="white",
-    title=None,
+    shrink_factors=(0.2, 0.2),
+    text_dist=1.2,
     save=False,
+    style="black",
 ):
 
-    # set appearance
-
-    fig, ax = plt.subplots(figsize=(15, 15), facecolor=background_color)
-    ax.axis("off")
+    """Main figure"""
 
     node_layout = {
-        n: circle(len(ordered_nodes), startangle=startangle)[i]
-        for i, n in enumerate(ordered_nodes)
+        **{
+            n: circle(fields.shape[0] - 1, startangle=startangle)[i]
+            for i, n in enumerate(fields.drop("Philosophy").index)
+        },
+        **{"Philosophy": (0, 0)},
     }
 
     text_layout = {
-        n: {
-            "xy": (1.2 * np.sign(node_layout[n][0]), 1.4 * node_layout[n][1]),
-            "ang": (
-                np.rad2deg(np.arccos(node_layout[n][0]))
-                if node_layout[n][1] >= 0
-                else 360 - np.rad2deg(np.arccos(node_layout[n][0]))
-            ),
-        }
-        for n in ordered_nodes
+        n: [text_dist * c for c in node_layout[n]] if n != "Philosophy" else (0, -0.1)
+        for n in fields.index
     }
 
-    # draw nodes and edges
+    fig, ax = plt.subplots(figsize=figsize, facecolor=facecolor)
+    ax.axis("off")
 
     nx.draw_networkx_nodes(
-        backbone,
+        data_dict[f"level_{level}"]["backbone"],
         pos=node_layout,
-        node_size=[node_size[n] * node_scale for n in backbone.nodes()],
-        node_color=[node_colors[n] for n in backbone.nodes()],
+        node_size=[
+            fields.loc[n, "n_nodes_weighted"] * node_scale
+            for n in data_dict[f"level_{level}"]["backbone"].nodes()
+        ],
+        node_color=inner_color,
+        edgecolors=[
+            fields.loc[n, "color_b"]
+            for n in data_dict[f"level_{level}"]["backbone"].nodes()
+        ],
+        linewidths=3,
     )
-    
-    if G:
+
+    for edge in data_dict[f"level_{level}"]["backbone"].edges(data=True):
 
         nx.draw_networkx_edges(
-            G,
-            edgelist=[edge for edge in G.edges() if edge not in backbone.edges()],
+            data_dict[f"level_{level}"]["backbone"],
             pos=node_layout,
-            width=[
-                edge[2]["weight"] * edge_scale
-                for edge in G.edges(data=True)
-                if edge not in backbone.edges(data=True)
-            ],
-            arrowstyle="-",
-            alpha=0.25,
+            edgelist=[edge],
+            edge_color=fields.loc[edge[0], "color_b"],
+            arrowstyle=matplotlib.patches.ArrowStyle.Wedge(
+                tail_width=edge[2]["weight"] * edge_scale * 2,
+                shrink_factor=shrink_factors[0],
+            ),
+            connectionstyle=matplotlib.patches.ConnectionStyle("Arc3", rad=-0.3),
         )
 
-    nx.draw_networkx_edges(
-        backbone,
-        pos=node_layout,
-        width=[edge[2]["weight"] * edge_scale * 2 for edge in backbone.edges(data=True)],
-        edge_color=[node_colors[edge[0]] for edge in backbone.edges()],
-        arrowstyle=matplotlib.patches.ArrowStyle.Wedge(shrink_factor=0.2)
-        if arrowstyle == "wedge"
-        else arrowstyle,
-        connectionstyle=matplotlib.patches.ConnectionStyle("Arc3", rad=-0.2)
-        if connectionstyle == "arc"
-        else connectionstyle,
-    )
+        nx.draw_networkx_edges(
+            data_dict[f"level_{level}"]["backbone"],
+            pos=node_layout,
+            edgelist=[edge],
+            edge_color=inner_color,
+            arrowstyle=matplotlib.patches.ArrowStyle.Wedge(
+                tail_width=edge[2]["weight"] * edge_scale,
+                shrink_factor=shrink_factors[1],
+            ),
+            connectionstyle=matplotlib.patches.ConnectionStyle("Arc3", rad=-0.3),
+        )
 
-    # annotate
+    text_outline = "#ffffff" if (text_color == "#000000") else "#000000"
 
     for k, v in text_layout.items():
 
         ax.annotate(
             k,
-            xy=node_layout[k],
-            xytext=v["xy"],
+            v,
             horizontalalignment="left" if np.sign(node_layout[k][0]) == 1 else "right",
             font_properties=font_props["label"],
-            arrowprops={
-                "color": "black",
-                "arrowstyle": "-",
-                "connectionstyle": "angle,angleA=0,angleB={}".format(v["ang"]),
-            },
+            color=text_color,
+            fontsize=24 if k == "Philosophy" else 18,
+            path_effects=[PathEffects.withStroke(linewidth=3, foreground=text_outline)],
         )
-        
-    if title:
-        ax.set_title(title, font_properties=font_props["title"], pad=120)
+
+    """Legend"""
+
+    legend_g = nx.Graph()
+    legend_g.add_edges_from([[i, i + 1] for i in range(3)])
+    legend_layout = {i: (np.linspace(-1, 1, 4)[i], -text_dist - 0.5) for i in range(4)}
+
+    nx.draw_networkx_nodes(
+        legend_g,
+        pos=legend_layout,
+        node_size=1000,
+        node_color="#000000",
+        edgecolors=["#ffffff" if n <= level else facecolor for n in legend_g.nodes()],
+        linewidths=4,
+    )
+
+    nx.draw_networkx_edges(
+        legend_g,
+        pos=legend_layout,
+        edgelist=[edge for edge in legend_g.edges() if edge[1] <= level],
+        width=30,
+        edge_color="#ffffff",
+    )
+    nx.draw_networkx_edges(legend_g, pos=legend_layout, width=20, edge_color="#000000")
+
+    ax.annotate(
+        f"Cross-field edges based on level {level} connections",
+        (-1, -text_dist - 0.3),
+        font_properties=font_props["label"],
+        color=text_color,
+        path_effects=[PathEffects.withStroke(linewidth=3, foreground=text_outline)],
+    )
 
     if save:
-        plt.savefig("figs/{}.png".format("_".join(title.lower().split(" "))), bbox_inches="tight")
-        
+        plt.savefig(
+            f"figs/fancy_backbones/backbone_{level}_{style}.png",
+            bbox_inches="tight",
+            facecolor=fig.get_facecolor(),
+        )
 
         
 ### DATA ANALYSIS
 
 
-def ols_model(X, y, test_size=0.25):
+def gls_model(X, y, test_size=0.25):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size)
 
-    ols = OLS(y_train, X_train).fit()
+    gls = GLS(y_train, X_train).fit(cov_type='HC1')
 
     coeffs = (
-        ols.params.to_frame()
+        gls.params.to_frame()
         .rename(columns={0: "coeff"})
         .merge(
-            ols.pvalues.to_frame().rename(columns={0: "p-value"}),
+            gls.pvalues.to_frame().rename(columns={0: "p-value"}),
             left_index=True,
             right_index=True,
         )
@@ -416,9 +548,9 @@ def ols_model(X, y, test_size=0.25):
         )[["coeff"]]
     )
 
-    mse = ols.predict(X_test).pipe(lambda s: (s - y_test) ** 2).mean()
+    mse = gls.predict(X_test).pipe(lambda s: (s - y_test) ** 2).mean()
 
-    return {"coeffs": coeffs, "mse": mse}
+    return {"model": gls, "coeffs": coeffs, "mse": mse}
 
 
 class LogisticReg(LogisticRegression):
@@ -558,24 +690,28 @@ def build_graph(nodes, edges, weighted, directed, print_info=True):
     return G
 
 
-def neighbor_connectivity(node, graph, weighted, directed):
+def directed_neighbor_connectivity(node, graph, direction):
 
-    w = "weight" if weighted else None
+    if direction not in {"in", "out", "both"}:
+        raise ValueError("Invalid direction. Expected 'in', 'out' or 'both'.")
 
-    if directed:
+    if direction == "in":
+        arr = np.array([graph.in_degree(n) for n in graph.predecessors(node)])
+
+    elif direction == "out":
+        arr = np.array([graph.out_degree(n) for n in graph.successors(node)])
+
+    else:
         arr = np.array(
             [
-                graph.in_degree(n, weight=w) + graph.out_degree(n, weight=w)
+                graph.in_degree(n) + graph.out_degree(n)
                 for n in list(graph.successors(node)) + list(graph.predecessors(node))
             ]
         )
 
-    else:
-
-        arr = np.array([graph.degree(n, weight=w) for n in list(graph.neighbors(node))])
-
     if arr.shape[0] == 0:
         return 0
+
     return arr.mean()
 
 
@@ -731,7 +867,7 @@ def depth_n_field_edges(G, n, index_df, batchsize=100_000):
 
     field_edges.to_parquet(f"output/depth_{n}_field_edges.parquet")
     field_link_matrix = field_edges.reset_index().pivot_table(
-        index="field_from", columns="field_to", values="weight"
+        index="field_to", columns="field_from", values="weight"
     )
     field_link_matrix.to_parquet(f"output/depth_{n}_field_link_matrix.parquet")
 
